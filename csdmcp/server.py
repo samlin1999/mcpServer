@@ -114,6 +114,8 @@ def handle(message: dict):
                 "編輯 Cocos Studio 的 .csd，並用 csdview 看實際畫面。"
                 "動手前先用 tree 或 find 取得正確的節點路徑；"
                 "改完用 doctor 確認沒有做出 staleLayout。"
+                "改到沒指定字型的文字時，Windows 超框或 iOS 放不下就不會寫檔，"
+                "照錯誤裡的寬度加寬或縮短文案再送。Android 沿用 Windows 的字寬。"
                 "改壞了用 undo 還原。"),
         })
         return

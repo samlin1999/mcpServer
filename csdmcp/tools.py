@@ -34,6 +34,11 @@ _PROPS_DOC = (
 )
 
 _PROPS = {"type": "object", "description": _PROPS_DOC, "additionalProperties": True}
+_ALLOW_PLATFORM = {
+    "type": "boolean", "default": False,
+    "description": "系統字在 Windows 超框或 iOS 放不下時仍寫入。只在程式會依該機字寬另外處理時使用，"
+                   "而且要告訴使用者哪個節點、怎麼處理。",
+}
 
 
 def _preview_field(default_text: str) -> dict:
@@ -138,8 +143,10 @@ TOOLS = [
     },
     {
         "name": "doctor",
-        "description": "檢查缺失資源、staleLayout（百分比與絕對值對不上）與 textOverflow。"
-                       "畫面缺東西或版面怪怪的先跑這個；編輯完也該再跑一次確認沒弄壞。",
+        "description": "檢查缺失資源、staleLayout（百分比與絕對值對不上）、textOverflow，"
+                       "以及 textOverflowPlatforms（沒指定字型的文字換到 iOS 會不會超框；"
+                       "Android 沿用 Windows 字寬。這項不算進 ok）。"
+                       "畫面缺東西、版面怪怪，或剛製作／調整過系統字，都要跑一次。",
         "inputSchema": {"type": "object",
                         "properties": {"csd": _CSD, "project": _PROJECT},
                         "required": ["csd"]},
@@ -217,6 +224,7 @@ TOOLS = [
                                          "格式同 edit_batch 的 add 操作（可省略 op）",
                           "items": {"type": "object", "additionalProperties": True}},
                 "preview": _preview_field("看新檔案長什麼樣"),
+                "allowPlatformOverflow": _ALLOW_PLATFORM,
                 "anim": {"type": "array",
                          "description": "建好節點後接著寫的時間軸，格式同 set_anim"
                                         "（每筆要有 node，加上 prop+frames 或 tracks）",
@@ -245,11 +253,14 @@ TOOLS = [
         "name": "set_prop",
         "description": "改一個節點的屬性。改到位置或尺寸時會自動同步 Cocos Studio 的"
                        "冗餘欄位（四個邊界、PrePosition、PreSize），改尺寸還會重算子節點的，"
-                       "所以不會做出 doctor 會報 staleLayout 的檔案。",
+                       "所以不會做出 doctor 會報 staleLayout 的檔案。"
+                       "改了沒指定字型的文字或它的框，Windows 超框或 iOS 放不下時這次不會寫檔，"
+                       "錯誤裡會給放得下的寬度。Android 沿用 Windows 的字寬。",
         "inputSchema": {
             "type": "object",
             "properties": {"csd": _CSD, "project": _PROJECT, "node": _NODE,
-                           "props": _PROPS, "preview": _preview_field("看改完的樣子")},
+                           "props": _PROPS, "preview": _preview_field("看改完的樣子"),
+                           "allowPlatformOverflow": _ALLOW_PLATFORM},
             "required": ["csd", "node", "props"],
         },
     },
@@ -267,6 +278,7 @@ TOOLS = [
                 "name": {"type": "string", "description": "新節點的名稱，同層不可重複"},
                 "props": _PROPS,
                 "preview": _preview_field("看新節點加在哪"),
+                "allowPlatformOverflow": _ALLOW_PLATFORM,
             },
             "required": ["csd", "name"],
         },
@@ -318,7 +330,9 @@ TOOLS = [
         "name": "edit_batch",
         "description": "一次做多個編輯，全部成功才寫檔，中途出錯就整筆放棄、原檔不動。"
                        "要一起改好幾個節點時用這個，只會產生一份快照。"
-                       "op 可以是 set / add / delete / duplicate / reparent / anim / clips。",
+                       "op 可以是 set / add / delete / duplicate / reparent / anim / clips。"
+                       "改了沒指定字型的文字或它的框，Windows 超框或 iOS 放不下時整批不寫檔。"
+                       "Android 沿用 Windows 的字寬。",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -331,6 +345,7 @@ TOOLS = [
                     "items": {"type": "object", "additionalProperties": True},
                 },
                 "preview": _preview_field("看整批改完的樣子"),
+                "allowPlatformOverflow": _ALLOW_PLATFORM,
             },
             "required": ["csd", "ops"],
         },
@@ -475,7 +490,46 @@ def _shape(ops) -> list:
     return ops
 
 
-def _apply_ops(path: str, ops: list) -> dict:
+def _system_text_roots(ops: list, results: list) -> list[str]:
+    """這次有改到文字內容、字級或框的節點。沒有就回空的，不必量三平台。"""
+    keys = {"text", "fontSize", "w", "h"}
+    roots = []
+    for op, result in zip(ops, results):
+        if not isinstance(result, dict):
+            continue
+        path = result.get("node")
+        if not path:
+            continue
+        kind = str(op.get("op", "set")).strip().lower()
+        props = op.get("props") or {}
+        if kind == "add" and str(op.get("type") or "").lower() in ("text", "button"):
+            roots.append(path)
+        elif kind == "set" and keys & set(props):
+            roots.append(path)
+    return roots
+
+
+def _platform_gate(path: str, xml: bytes, roots: list[str], allow: bool) -> dict | None:
+    """放不下就不寫檔。量測本身失敗時不擋寫入，把原因附在回傳裡。"""
+    if not roots:
+        return None
+    try:
+        from csdview import platform_fit
+        review = platform_fit.review_unsaved(path, xml, roots)
+    except Exception as exc:
+        return {"clear": False, "error": f"三平台字寬沒量成：{exc}", "concerns": []}
+    if review["block"] and not allow:
+        raise EditError(review["message"])
+    return {
+        "clear": not review["concerns"],
+        "waived": bool(allow and review["concerns"]),
+        "note": review["waiveNote"] if allow and review["concerns"] else review["message"],
+        "fonts": review.get("fonts"),
+        "concerns": review["concerns"],
+    }
+
+
+def _apply_ops(path: str, ops: list, allow_platform_overflow: bool = False) -> dict:
     """依序套用所有操作。任何一步失敗就整筆放棄——這時還沒寫過檔，原檔本來就沒動。"""
     ops = _shape(ops)
     doc = Csd(path)
@@ -527,8 +581,13 @@ def _apply_ops(path: str, ops: list) -> dict:
             raise EditError(f"第 {index} 個操作（{kind}）失敗，整批都沒有套用：{exc}") from exc
 
     description = "；".join(doc.changes) or "編輯"
+    platform_text = _platform_gate(
+        path, doc.xml.data, _system_text_roots(ops, results), allow_platform_overflow)
     saved = doc.save(description[:300])
-    return {"file": path, "operations": results, **saved}
+    payload = {"file": path, "operations": results, **saved}
+    if platform_text:
+        payload["platformText"] = platform_text
+    return payload
 
 
 def _with_preview(payload: dict, args: dict, path: str) -> tuple:
@@ -627,7 +686,8 @@ def call(name: str, args: dict) -> tuple:
             for item in args["anim"]:
                 ops.append({**item, "op": item.get("op", "anim")})
         if ops:
-            made["content"] = _apply_ops(path, ops)
+            made["content"] = _apply_ops(
+                path, ops, bool(args.get("allowPlatformOverflow")))
 
         if args.get("register", True):
             if not solution:
@@ -727,7 +787,7 @@ def call(name: str, args: dict) -> tuple:
         else:
             ops = [{"op": "reparent", "node": args.get("node"),
                     "parent": args.get("parent"), "keep": args.get("keep", "screen")}]
-        payload = _apply_ops(path, ops)
+        payload = _apply_ops(path, ops, bool(args.get("allowPlatformOverflow")))
         return _with_preview(payload, args, path)
 
     raise EditError(f"沒有這個工具：{name}")
