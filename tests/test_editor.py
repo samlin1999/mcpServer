@@ -154,6 +154,32 @@ def run_checks(work: str) -> None:
           bool(doc.elem_of(added.node_path).get("ActionTag")))
     check("新增後沒有 staleLayout", not doctor(work)["staleLayout"])
 
+    # ---- 換圖：原本是 Studio 預設佔位圖（Type="Default"）的，Type 要一起改成 Normal
+    doc = Csd(work)
+    ref = doc.resolve("csdmcp_new")
+    doc.set_props(ref, {"elements": {"FileData": {"Type": "Default", "Path": "Default/Sprite.png", "Plist": ""}}})
+    doc.save("測試：設成預設佔位圖")
+    doc = Csd(work)
+    doc.set_props(doc.resolve("csdmcp_new"), {"image": "test/new_art.png"})
+    doc.save("測試：佔位圖換成新圖")
+    fd = Csd(work).elem_of(Csd(work).resolve("csdmcp_new").node_path).child("FileData")
+    check("預設佔位圖換圖後 Type 變 Normal",
+          (fd.get("Type"), fd.get("Path"), fd.get("Plist")) == ("Normal", "test/new_art.png", ""),
+          f"{fd.get('Type')} {fd.get('Path')} {fd.get('Plist')!r}")
+    # 合圖裡的圖只換 Path：Type 與 Plist 保留（同一個合圖裡換圖）
+    doc = Csd(work)
+    doc.set_props(doc.resolve("csdmcp_new"),
+                  {"elements": {"FileData": {"Type": "MarkedSubImage", "Plist": "test/pack.plist"}}})
+    doc.save("測試：設成合圖")
+    doc = Csd(work)
+    doc.set_props(doc.resolve("csdmcp_new"), {"image": "test/other_in_pack.png"})
+    doc.save("測試：合圖內換圖")
+    fd = Csd(work).elem_of(Csd(work).resolve("csdmcp_new").node_path).child("FileData")
+    check("合圖內換圖保留 MarkedSubImage 與 Plist",
+          (fd.get("Type"), fd.get("Plist"), fd.get("Path")) == ("MarkedSubImage", "test/pack.plist",
+                                                               "test/other_in_pack.png"),
+          f"{fd.get('Type')} {fd.get('Plist')!r} {fd.get('Path')}")
+
     # ---- 複製節點
     doc = Csd(work)
     source_ref = doc.resolve("csdmcp_new")

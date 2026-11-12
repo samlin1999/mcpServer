@@ -515,11 +515,18 @@ class Csd:
             path = str(props[key]).replace("\\", "/")
             plist = props.get("plist")
             entry = {"Path": path}
+            existing = el.child(tag)
             if plist is not None:
                 plist = str(plist).replace("\\", "/")
                 entry["Plist"] = plist
                 entry["Type"] = "MarkedSubImage" if plist else "Normal"
-            elif el.child(tag) is None:
+            elif existing is None:
+                entry["Type"] = "Normal"
+                entry["Plist"] = ""
+            elif existing.get("Type") == "Default" and not path.startswith("Default/"):
+                # 原本是 Studio 預設佔位圖（Type="Default"）：只換 Path 的話 Studio 與 csdview
+                # 照樣當它是預設圖、新圖不會出現，所以 Type 一起改成 Normal。
+                # MarkedSubImage／PlistSubImage 不動：同一個合圖裡換圖是常見用法，那時 Type 與 Plist 本來就該保留。
                 entry["Type"] = "Normal"
                 entry["Plist"] = ""
             child_attrs.setdefault(tag, {}).update(entry)
